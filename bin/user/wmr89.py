@@ -109,7 +109,7 @@ class WMR89Driver(weewx.drivers.AbstractDevice):
             logdbg("mapped: %s" % packet)
             if packet:
                 packet['dateTime'] = int(time.time() + 0.5)
-                packet['usUnits'] = weewx.US
+                packet['usUnits'] = weewx.METRIC
                 self._calculate_rain_delta(packet)
                 yield packet
 
@@ -235,12 +235,14 @@ class Station(object):
 
     @staticmethod
     def decode_inside_th(x):
+        # temperature in degree C, humidity in percent
         t = 0.1 * (256 * ord(x[3]) + ord(x[4]))
         h = ord(x[6])
         return t, h
 
     @staticmethod
     def decode_outside_th(x):
+        # temperature in degree C, humidity in percent
         t = 256 * ord(x[3]) + ord(x[4])
         if t >= 32768:
             t = t - 65536
@@ -250,6 +252,7 @@ class Station(object):
 
     @staticmethod
     def decode_wind(x):
+        # speed in km/h
         avg = 0.36 * ord(x[3])
         gust = 0.36 * ord(x[5])
         wdir = 22.5 * ord(x[7])
@@ -264,21 +267,21 @@ class Station(object):
 
     @staticmethod
     def decode_pressure(x):
-        # pressure is units of ?
+        # pressure is units of mbar
         return 0.1 * (256 * ord(x[2]) + ord(x[3]))
 
     @staticmethod
     def decode_rain(x):
-        # rain in past hour
-        rh = 256 * ord(x[2]) + ord(x[3])
+        # rain in past hour in cm
+        rh = 0.1 * (256 * ord(x[2]) + ord(x[3]))
         if x[2:4].encode('hex') == 'fffe':
             rh = None
-        # rain rate in mm/hr
-        rr = 256 * ord(x[4]) + ord(x[5])
-        # last 24 hours in mm
-        r24 = 256 * ord(x[6]) + ord(x[7])
-        # rain total in mm
-        rt = 256 * ord(x[8]) + ord(x[9])
+        # rain rate in cm/hr
+        rr = 0.1 * (256 * ord(x[4]) + ord(x[5]))
+        # last 24 hours in cm
+        r24 = 0.1 * (256 * ord(x[6]) + ord(x[7]))
+        # rain total in cm
+        rt = 0.1 * (256 * ord(x[8]) + ord(x[9]))
         return rr, rh, r24, rt
 
     @staticmethod

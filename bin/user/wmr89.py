@@ -30,7 +30,7 @@ import time
 import weewx.drivers
 
 DRIVER_NAME = 'WMR89'
-DRIVER_VERSION = '0.1'
+DRIVER_VERSION = '0.2'
 
 
 def loader(config_dict, _):
@@ -63,10 +63,32 @@ class WMR89Driver(weewx.drivers.AbstractDevice):
     port - serial port
     [Required. Default is /dev/ttyUSB0]
     """
+
+    # map sensor values to the database schema fields
+    # the default map is for the wview schema
+    DEFAULT_MAP = {
+        'pressure': 'pressure',
+        'windSpeed': 'wind_avg',
+        'windDir': 'wind_dir',
+        'windGust': 'wind_gust',
+        'windchill': 'wind_chill',
+        'inTemp': 'temperature_in',
+        'outTemp': 'temperature_out',
+        'inHumidity': 'humidity_in',
+        'outHumidity': 'humidity_out',
+        'dewpoint': 'dewpoint_in',
+        'dewpoint': 'dewpoint_out',
+        'rain_total': 'rain_total',
+        'rainRate': 'rain_rate'}
+
     def __init__(self, **stn_dict):
         loginf('driver version is %s' % DRIVER_VERSION)
         self.port = stn_dict.get('port', Station.DEFAULT_PORT)
         loginf('using serial port %s' % self.port)
+        self.sensor_map = dict(self.DEFAULT_MAP)
+        if 'sensor_map' in stn_dict:
+            self.sensor_map.update(stn_dict['sensor_map'])
+        loginf('sensor map is %s' % self.sensor_map)
         self.last_rain = None
         self.station = Station(self.port)
         self.station.open()
@@ -82,13 +104,26 @@ class WMR89Driver(weewx.drivers.AbstractDevice):
 
     def genLoopPackets(self):
         for pkt in self.station.get_data():
-            packet = {'dateTime': int(time.time() + 0.5),
-                      'usUnits': weewx.US}
-            packet.update(pkt)
-            self._augment_packet(packet)
-            yield packet
+            logdbg("sensors: $s" % pkt)
+            packet = self._map_packet(pkt)
+            logdbg("mapped: %s" % packet)
+            if packet:
+                packet['dateTime'] = int(time.time() + 0.5)
+                packet['usUnits'] = weewx.US
+                self._calculate_rain_delta(packet)
+                yield packet
 
-    def _augment_packet(self, packet):
+    def _map_packet(self, pkt):
+        # map sensor names to database fields
+        # map hardware names to the requested database schema names
+        p = dict()
+        for label in self.sensor_map:
+            if self.sensor_map[label] in pkt:
+                p[label] = pkt[self.sensor_map[label]]
+        return p
+
+    def _calculate_rain_delta(self, packet):
+        # calculate a rain delta given accumulated rain
         packet['rain'] = weewx.wxformulas.calculate_rain(
             packet['rain_total'], self.last_rain)
         self.last_rain = packet['rain_total']
@@ -134,9 +169,9 @@ class Station(object):
         return self.serial_port.read()
 
     def get_data(self):
-        # generator that returns data as dict
-        prev_datetime = None
-        datetime = None
+        # generator that returns data as dict.  data come to us as multiple
+        # lines of bytes from the station.  decode each line and return the
+        # corresponding data as soon as we receive it.
         pkt = dict()
         while True:
             line = ''
@@ -150,30 +185,44 @@ class Station(object):
                 a = line.split(Station.MARKER)
                 a = filter(None, a)
                 for i in range(len(a)):
+                    if weewx.debug > 1:
+                        logdbg("raw: %s" % _fmt(a[i]))
                     x = a[i][0].encode('hex')
                     y = a[i][2].encode('hex')
                     if x == 'b0':
-                        datetime = Station.decode_datetime(a[i])
-                        if prev_datetime <> datetime:
-                            yield pkt
-                            pkt = dict()
-                    if x == 'b5' and y == '00':
-                        t, h = Station.decode_inside_th(a[i])
-                        pkt['temperature_in'] = t
-                        pkt['humidity_in'] = h
-                    if x == 'b5' and y == '01':
-                        t, h = Station.decode_outside_th(a[i])
-                        pkt['temperature_out'] = t
-                        pkt['humidity_out'] = h
-                    if x == 'b2':
+                        # ignore the station's date and time
+                        if weewx.debug > 1:
+                            datetime = Station.decode_datetime(a[i])
+                            now = time.time()
+                            weeutil.timestamp_to_string(now)
+                            logdbg("datetime: %s (%s)" % (datetime, now))
+                    elif x == 'b1':
+                        rr, rh, r24, rt = Station.decode_rain(a[i])
+                        pkt['rain_total'] = rt
+                        pkt['rain_rate'] = rr
+                    elif x == 'b2':
                         avg, gust, wdir, chill = Station.decode_wind(a[i])
                         pkt['wind_speed'] = avg
                         pkt['wind_gust'] = gust
                         pkt['wind_dir'] = wdir
                         pkt['wind_chill'] = chill
-                    if x == 'b4':
+                    elif x == 'b4':
                         pkt['pressure'] = Station.decode_pressure(a[i])
-                    prev_datetime = datetime
+                    elif x == 'b5':
+                        if y == '00':
+                            t, h = Station.decode_inside_th(a[i])
+                            pkt['temperature_in'] = t
+                            pkt['humidity_in'] = h
+                        elif y == '01':
+                            t, h = Station.decode_outside_th(a[i])
+                            pkt['temperature_out'] = t
+                            pkt['humidity_out'] = h
+                    else:
+                        loginf("unknown packet type %0.2X: %s" %
+                               (ord(x), _fmt(a[i])))
+                    if pkt:
+                        yield pkt
+                        pkt = dict()
             time.sleep(0.5)
 
     @staticmethod
@@ -217,6 +266,20 @@ class Station(object):
     def decode_pressure(x):
         # pressure is units of ?
         return 0.1 * (256 * ord(x[2]) + ord(x[3]))
+
+    @staticmethod
+    def decode_rain(x):
+        # rain in past hour
+        rh = 256 * ord(x[2]) + ord(x[3])
+        if x[2:4].encode('hex') == 'fffe':
+            rh = None
+        # rain rate in mm/hr
+        rr = 256 * ord(x[4]) + ord(x[5])
+        # last 24 hours in mm
+        r24 = 256 * ord(x[6]) + ord(x[7])
+        # rain total in mm
+        rt = 256 * ord(x[8]) + ord(x[9])
+        return rr, rh, r24, rt
 
     @staticmethod
     def set_baud_rate():

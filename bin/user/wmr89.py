@@ -30,7 +30,7 @@ import time
 import weewx.drivers
 
 DRIVER_NAME = 'WMR89'
-DRIVER_VERSION = '0.2'
+DRIVER_VERSION = '0.3'
 
 
 def loader(config_dict, _):
@@ -272,16 +272,17 @@ class Station(object):
 
     @staticmethod
     def decode_rain(x):
-        # rain in past hour in cm
-        rh = 0.1 * (256 * ord(x[2]) + ord(x[3]))
+        # hardare reports inches and inch/hour, convert to cm and cm/hour
+        # rain in past hour in inches
+        rh = 0.01 * (256 * ord(x[2]) + ord(x[3])) * 2.54
         if x[2:4].encode('hex') == 'fffe':
             rh = None
-        # rain rate in cm/hr
-        rr = 0.1 * (256 * ord(x[4]) + ord(x[5]))
-        # last 24 hours in cm
-        r24 = 0.1 * (256 * ord(x[6]) + ord(x[7]))
-        # rain total in cm
-        rt = 0.1 * (256 * ord(x[8]) + ord(x[9]))
+        # rain rate in inch/hour
+        rr = 0.01 * (256 * ord(x[4]) + ord(x[5])) * 2.54
+        # last 24 hours in inches
+        r24 = 0.01 * (256 * ord(x[6]) + ord(x[7])) * 2.54
+        # rain total in inches
+        rt = 0.01 * (256 * ord(x[8]) + ord(x[9])) * 2.54
         return rr, rh, r24, rt
 
     @staticmethod

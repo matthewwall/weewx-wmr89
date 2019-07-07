@@ -68,7 +68,7 @@ class WMR89Driver(weewx.drivers.AbstractDevice):
     # the default map is for the wview schema
     DEFAULT_MAP = {
         'pressure': 'pressure',
-        'windSpeed': 'wind_avg',
+        'windSpeed': 'wind_speed',
         'windDir': 'wind_dir',
         'windGust': 'wind_gust',
         'windchill': 'wind_chill',
